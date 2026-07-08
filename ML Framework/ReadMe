@@ -1,0 +1,224 @@
+# Neutrophil Metabolic Reprogramming Pipeline
+
+A computational pipeline for characterizing condition-specific metabolic states in human neutrophils using genome-scale metabolic (GSM) modeling and multi-method machine learning feature importance analysis.
+
+---
+
+## Overview
+
+This pipeline integrates transcriptomic data with genome-scale metabolic models to reconstruct condition-specific flux distributions across four neutrophil states (Normal, G-CSF-treated, HSCT, and PDAC-associated). A bootstrap sampling strategy generates a robust feature matrix from parsimonious flux balance analysis (pFBA), which is then subjected to a four-method consensus ranking framework to identify the most discriminative metabolic reactions. Solute carrier (SLC) family transporters emerged as the dominant discriminative feature class in both the primary and an independent validation cohort.
+
+A full description of the methods, results, and biological interpretation is available in the associated dissertation chapter and manuscript [CITATION].
+
+---
+
+## Key Findings
+
+- SLC family transporters are the top-ranked discriminative metabolic feature class across all four methods in the primary cohort (Montaldo et al., Nature Immunology)
+- Vitamin E metabolism (gamma-tocopherol, gamma-tocotrienol) differentiates G-CSF-treated from HSCT neutrophils
+- PDAC-associated neutrophils display globally elevated metabolic activity with restricted metabolite exchange fluxes
+- In the independent sepsis validation cohort (GSE167363, Qiu et al.), SLC-associated reactions account for 85% of the top consensus-ranked features, compared to 25% in the primary cohort
+- LDA resolved to a rank-1 solution in the primary cohort, indicating that G-CSF, HSCT, and PDAC conditions diverge from Normal along a shared metabolic axis
+
+---
+
+## Repository Structure
+
+```
+neutrophil-metabolic-reprogramming/
+â”œâ”€â”€ README.md
+â”œâ”€â”€ LICENSE
+â”œâ”€â”€ .gitignore
+â”œâ”€â”€ environment.yml
+â”œâ”€â”€ requirements.txt
+â”‚
+â”œâ”€â”€ scripts/
+â”‚   â”œâ”€â”€ step01_gem_curation/          # GEM loading, curation, GPR review
+â”‚   â”œâ”€â”€ step02_fba_simulation/        # pFBA + bootstrap sampling per condition
+â”‚   â”œâ”€â”€ step03_slc_annotation/        # SLC transporter identification via GPR mapping
+â”‚   â””â”€â”€ step03_moduleA/
+â”‚       â””â”€â”€ 04_shap_analysis.py       # Multi-method ML consensus ranking
+â”‚
+â”œâ”€â”€ slurm/
+â”‚   â”œâ”€â”€ 02_bootstrap_fba.sh
+â”‚   â””â”€â”€ 04_shap_analysis.sh           # SLURM job script for step 04
+â”‚
+â”œâ”€â”€ data/
+â”‚   â””â”€â”€ models/                       # GEM model files (.xml/.mat) -- not tracked by git
+â”‚
+â””â”€â”€ outputsFVA/
+    â””â”€â”€ moduleA/                      # Primary cohort outputs
+        â”œâ”€â”€ X_features.csv
+        â”œâ”€â”€ y_labels.csv
+        â”œâ”€â”€ slc_annotation.csv
+        â”œâ”€â”€ importance_lda.csv
+        â”œâ”€â”€ importance_lasso.csv
+        â”œâ”€â”€ importance_shap.csv
+        â”œâ”€â”€ importance_consensus.csv
+        â”œâ”€â”€ top_slc_candidates_for_moduleB.csv
+        â”œâ”€â”€ cv_accuracy.csv
+        â”œâ”€â”€ cv_accuracy_summary.csv
+        â”œâ”€â”€ pca_variance.pdf
+        â”œâ”€â”€ pca_scatter.pdf
+        â””â”€â”€ lda_scatter.pdf
+```
+
+Validation outputs mirror this structure under:
+```
+outputs/validation/GSE167363/moduleA/
+```
+
+---
+
+## Datasets
+
+### Primary Dataset
+
+**Montaldo et al.** (*Nature Immunology*, 2022; E-MTAB-11188)
+
+Single-cell RNA-sequencing of human neutrophils across four conditions:
+- Normal (healthy donors)
+- G-CSF-treated (cytokine-mobilized)
+- HSCT (post-hematopoietic stem cell transplantation)
+- PDAC (pancreatic ductal adenocarcinoma-associated)
+
+### Validation Dataset
+
+**Qiu et al.** ( 2021; GEO: [GSE167363](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE167363); PMID: 34558746)
+
+Single-cell RNA-sequencing of neutrophils from peripheral blood of healthy controls, gram-negative sepsis survivors, and sepsis non-survivors. Neutrophils were isolated from PBMC populations by cell-type annotation.
+
+---
+
+## Pipeline Steps
+
+### Step 01 -- GEM Curation
+
+Loads the human genome-scale metabolic model ([Recon3D / Human-GEM / specify]), reviews and corrects gene-protein-reaction (GPR) associations, and removes reactions with no GPR entry or involving non-human metabolites. Final curated model: [N] reactions, [N] metabolites, [N] genes. Implemented in COBRApy.
+
+**Output:** Curated model file in `data/models/`
+
+---
+
+### Step 02 -- Bootstrap pFBA Simulation
+
+For each neutrophil condition, transcriptomic expression profiles are used to constrain reaction bounds. Parsimonious flux balance analysis (pFBA) is solved 100 times per condition using bootstrap-resampled expression values, producing a 400-sample flux matrix (100 samples x 4 conditions) with approximately 60,000 flux statistics per reaction (mean, SD, CV, CI bounds).
+
+**Output:** `outputsFVA/moduleA/X_features.csv`, `y_labels.csv`
+
+
+---
+
+### Step 03 -- SLC Annotation
+
+Identifies SLC family transporter reactions within the curated GEM via GPR association mapping (gene symbol prefix matching against the SLC gene family). Subsystem annotations were intentionally not used due to inconsistencies in the model's curation.
+
+**Output:** `outputsFVA/moduleA/slc_annotation.csv`
+
+---
+
+### Step 04 -- Multi-Method Consensus Ranking (Module A)
+
+**Script:** `04_shap_analysis.py`
+**Output root:** `outputsFVA/moduleA/`
+
+Runs four independent, complementary methods on the 400 x ~60,000 flux feature matrix:
+
+| Method | Type | What it captures |
+|--------|------|-----------------|
+| PCA | Unsupervised | PC1/PC2 loadings -- reactions carrying the most variance across all bootstrap samples regardless of condition label |
+| LDA | Supervised linear | Coefficients on the discriminant axis/axes that best separate the four conditions |
+| Lasso LR | Supervised sparse linear | Non-zero coefficients from L1-penalized logistic regression -- a minimal sufficient set of discriminative reactions |
+| RF + XGBoost + SHAP | Supervised nonlinear | SHAP values (SHapley Additive exPlanations) from ensemble classifiers; 4-fold stratified cross-validation for accuracy reporting |
+
+A consensus rank is computed as the mean rank of each reaction across all four methods. Reactions scoring highly across all four methods are robust candidates independent of any single method's assumptions.
+
+**Note on LDA rank-deficiency:** With four classes, `sklearn`'s LDA may determine that the between-class scatter has rank less than `n_classes - 1`. In the primary cohort, rank-1 was observed (not rank-3), indicating all three disease conditions diverge from Normal along a shared flux axis. The pipeline handles this explicitly by checking `coords.shape[1]` after fitting.
+
+**Key outputs:**
+- `importance_consensus.csv` -- full ranked reaction list with `is_slc` annotation
+- `top_slc_candidates_for_moduleB.csv` -- top 100 reactions filtered to SLC hits
+- `cv_accuracy.csv` -- per-fold cross-validation accuracy for RF and XGBoost
+- `cv_accuracy_summary.csv` -- mean, SD, min, max per model
+- `pca_variance.pdf`, `pca_scatter.pdf`, `lda_scatter.pdf` -- diagnostic figures
+
+---
+
+## Installation
+
+### Requirements
+
+- Python 3.9+
+- COBRApy
+- scikit-learn
+- XGBoost
+- SHAP
+- pandas, numpy, matplotlib
+- SLURM (for HPC deployment on Crane/Swan clusters)
+
+### Conda Environment
+
+```bash
+conda env create -f environment.yml
+conda activate neutrophil-pipeline
+```
+
+### Pip
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Running the Pipeline
+
+All scripts follow a CONFIG block pattern at the top of each file. Edit the `INPUT_DIR`, `OUTPUT_DIR`, and condition-specific paths directly in the script before running. No command-line arguments are required.
+
+```bash
+# Step 02: Bootstrap pFBA (submit to SLURM)
+sbatch slurm/02_bootstrap_fba.sh
+
+# Step 04: Multi-method ML ranking (submit to SLURM)
+sbatch slurm/04_shap_analysis.sh
+
+# Or run locally (not recommended for Step 04 on full ~60,000-feature matrix)
+python scripts/step03_moduleA/04_shap_analysis.py
+```
+
+**Memory note:** Step 04 requires substantial memory for the Lasso step on the full feature matrix. Allocate at least 64 GB RAM in `slurm/04_shap_analysis.sh`. See the SLURM scripts for recommended resource settings.
+
+---
+
+## Output Files Reference
+
+| File | Description |
+|------|-------------|
+| `X_features.csv` | Bootstrap flux feature matrix (400 samples x ~60,000 features) |
+| `y_labels.csv` | Condition label for each bootstrap sample |
+| `slc_annotation.csv` | Boolean `is_slc` flag for each reaction, derived from GPR gene symbols |
+| `importance_lda.csv` | Reaction importance scores from LDA loadings |
+| `importance_lasso.csv` | Non-zero Lasso coefficients and their ranks |
+| `importance_shap.csv` | Mean absolute SHAP values from Random Forest |
+| `importance_consensus.csv` | Mean rank across all methods, annotated with `is_slc` |
+| `top_slc_candidates_for_moduleB.csv` | SLC reactions in the top 100 consensus features |
+| `cv_accuracy.csv` | Per-fold cross-validation accuracy (RF and XGBoost, 4-fold) |
+| `cv_accuracy_summary.csv` | CV accuracy summary statistics per model |
+| `pca_variance.pdf` | Scree plot of PCA explained variance |
+| `pca_scatter.pdf` | PCA scatter (PC1 vs PC2), colored by condition |
+| `lda_scatter.pdf` | LDA discriminant space scatter, colored by condition |
+
+---
+
+## Validation (GSE167363)
+
+The same pipeline was applied independently to GSE167363 (sepsis neutrophils: healthy controls, survivors, non-survivors). Consensus rankings were computed as the mean of three method ranks (LDA, Lasso, SHAP; PCA excluded due to differing sample structure). SLC transporter reactions occupied 85% of the top consensus features in the validation cohort versus 25% in the primary cohort, and exhibited numerically stronger mean rank positions (~1,558 to ~1,837 versus ~2,084 to ~2,819 in the primary cohort).
+
+---
+
+## Contact
+
+Sunayana Malla
+PhD, Computational and Systems Biology
+University of Nebraska-Lincoln
+[smalla2@unl.edu or corresponding author]
